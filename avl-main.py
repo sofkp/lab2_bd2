@@ -1,6 +1,9 @@
 import struct
 import os
 import pandas as pd
+import csv
+import time
+import matplotlib.pyplot as plt
 
 RECORD_SIZE = struct.calcsize("i30sif10s")
 NODE_SIZE = struct.calcsize("iii") + RECORD_SIZE
@@ -35,7 +38,7 @@ class Node:
         self.right = right
 
     def __str__(self):
-            return f'Record: {self.record} \n Left: {self.left} | Right: {self.right} | Height: {self.height}'
+        return f'Record: {self.record} \n Left: {self.left} | Right: {self.right} | Height: {self.height}'
 
     def to_binary(self):
         header = struct.pack("iii", self.left, self.right, self.height)
@@ -52,20 +55,29 @@ class Node:
         return self.record.id
 
 
+import os
+import struct
+
 class AVLTree:
     def __init__(self, filename):
         self.filename = filename
         root = -1
-        with open(filename, "rb+") as f:
-            f.seek(0, os.SEEK_END)
-            file_size = f.tell()
+        if not os.path.exists(filename):
+            with open(filename, "wb") as f:
+                f.write(struct.pack("i", -1))
+            self.root = -1
+        else:
+            with open(filename, "rb+") as f:
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
 
-            if file_size != 0:
-                f.seek(0)
-                root = struct.unpack("i", f.read(4))[0]
-            else:
-                f.write(struct.pack("i", -1)) # root, size
-        self.root = root
+                if file_size != 0:
+                    f.seek(0)
+                    root = struct.unpack("i", f.read(4))[0]
+                else:
+                    f.seek(0)
+                    f.write(struct.pack("i", -1))
+            self.root = root
 
     def get_node_at(self, pos):
         with open(self.filename, "rb+") as f:
@@ -95,7 +107,6 @@ class AVLTree:
             record = Record(row.iloc[0], row.iloc[1], row.iloc[2], row.iloc[3], row.iloc[4])
             self.insert(record)
             print(f"inserted {record.key()}")
-
 
     def insert(self, record):
         self.get_root()
@@ -191,23 +202,27 @@ class AVLTree:
                 print(data)
                 i+=1
 
-    def _balance(self, node):
-        if node is None:
-            return node
-        
-        balance = self._get_balance(node)
+    def _balance(self, node_pos):
+        if node_pos == -1:
+            return node_pos
+
+        balance = self._get_balance(node_pos)
+        node = self.get_node_at(node_pos)
 
         if balance > 1:
             if self._get_balance(node.left) < 0:
                 node.left = self._left_rotate(node.left)
-            return self._right_rotate(node)
+                self.write_node_at(node, node_pos)
+            return self._right_rotate(node_pos)
 
         if balance < -1:
             if self._get_balance(node.right) > 0:
                 node.right = self._right_rotate(node.right)
-            return self._left_rotate(node)
+                self.write_node_at(node, node_pos)
+            return self._left_rotate(node_pos)
 
-        return node
+        self.write_node_at(node, node_pos)
+        return node_pos
     
     def _get_height(self, node_pos):
         if node_pos != -1:
@@ -222,15 +237,34 @@ class AVLTree:
     def find(self, value):
         return self._find(self.root, value)
 
-    def _find(self, node, value):
-        if not node:
-            return False
-        if node.data == value:
-            return True
-        elif value < node.data:
+    def _find(self, node_pos, value):
+        if node_pos == -1:
+            return None
+        node = self.get_node_at(node_pos)
+        if value == node.record.id:
+            return node.record
+        elif value < node.record.id:
             return self._find(node.left, value)
         else:
             return self._find(node.right, value)
+        
+    def search_rango(self, mini, maxi):
+        self.get_root()
+        result = []
+        self._search_rango(self.root, mini, maxi, result)
+        return result
+
+    def _search_rango(self, node_pos, mini, maxi, result):
+        if node_pos == -1:
+            return
+        node = self.get_node_at(node_pos)
+        key = node.key()
+        if mini < key:
+            self._search_rango(node.left, mini, maxi, result)
+        if mini <= key <= maxi:
+            result.append(node.record)
+        if key < maxi:
+            self._search_rango(node.right, mini, maxi, result)
 
     def get_preorder(self):
         return self._get_preorder(self.root)
@@ -261,6 +295,14 @@ class AVLTree:
         while current.right is not None:
             current = current.right
         return current.data if current else None
+    
+    def _max_node_pos(self, node_pos):
+        current_pos = node_pos
+        current = self.get_node_at(current_pos)
+        while current.right != -1:
+            current_pos = current.right
+            current = self.get_node_at(current_pos)
+        return current_pos
 
     def is_balanced(self):
         return self._is_balanced(self.root)
@@ -280,34 +322,42 @@ class AVLTree:
         return 1 + self._size(node.left) + self._size(node.right)
 
     def remove(self, value):
+        self.get_root()
         self.root = self._remove(self.root, value)
+        self.write_root()
 
-    def _remove(self, node, value):
-        if node is None:
-            return node
 
-        if value < node.data:
+    def _remove(self, node_pos, value):
+        if node_pos == -1:
+            return -1
+
+        node = self.get_node_at(node_pos)
+
+        if value < node.key():
             node.left = self._remove(node.left, value)
-        elif value > node.data:
+        elif value > node.key():
             node.right = self._remove(node.right, value)
         else:
             # Caso 1: Nodo con solo un hijo o sin hijos
-            if node.left is None and node.right is None:
-                return None
+            if node.left == -1 and node.right == -1:
+                return -1
             # Caso 2: Nodo con un hijo
-            elif node.left is None:
+            elif node.left == -1:
                 return node.right
-            elif node.right is None:
+            elif node.right == -1:
                 return node.left
             # Caso 3: Nodo con dos hijos
             else:
-                max_value = self._max_value(node.left)
-                node.data = max_value
-                node.left = self._remove(node.left, max_value)
+                max_node = self.get_node_at(self._max_node_pos(node.left))
+                node.record = max_node.record
+                node.left = self._remove(node.left, max_node.key())
+
 
         # Actualizamos la altura y balanceamos el nodo
         node.height = 1 + max(self._get_height(node.left), self._get_height(node.right))
-        return self._balance(node)
+        self.write_node_at(node, node_pos)
+        return self._balance(node_pos)
+
 
     def display_pretty(self):
         self.get_root()
@@ -320,9 +370,94 @@ class AVLTree:
             print(" " * 4 * level + "->", node.key())
             self._display_pretty(node.left, level + 1)
 
+def medir_tiempos_por_cantidad(avl, rows, cantidades):
+    tiempos_insert = []
+    tiempos_busqueda = []
+    tiempos_rango = []
+    tiempos_delete = []
+
+    for n in cantidades:
+        sample = rows[:n]
+
+        if os.path.exists("avl.dat"):
+            os.remove("avl.dat")
+        avl = AVLTree("avl.dat")
+
+        t1 = time.time()
+        for row in sample:
+            id = int(row[0])
+            nombre = row[1]
+            cantidad = int(row[2])
+            precio = float(row[3])
+            fecha = row[4]
+            avl.insert(Record(id, nombre, cantidad, precio, fecha))
+        t2 = time.time()
+        tiempos_insert.append(t2 - t1)
+
+        t1 = time.time()
+        for i in range(1, n + 1, max(1, n // 10)):
+            avl.find(i)
+        t2 = time.time()
+        tiempos_busqueda.append(t2 - t1)
+
+        t1 = time.time()
+        avl.search_rango(1, n)
+        t2 = time.time()
+        tiempos_rango.append(t2 - t1)
+
+        t1 = time.time()
+        for i in range(1, n + 1, max(1, n // 10)):
+            avl.remove(i)
+        t2 = time.time()
+        tiempos_delete.append(t2 - t1)
+
+    return tiempos_insert, tiempos_busqueda, tiempos_rango, tiempos_delete
+
+def graficar_lineal(cantidades, tiempos, titulo, nombre_archivo):
+    plt.figure(figsize=(10, 6))
+    plt.plot(cantidades, tiempos, marker='o', linestyle='-', linewidth=2.5, color='#5F9EA0', label=titulo)
+    for i, tiempo in enumerate(tiempos):
+        plt.text(cantidades[i], tiempo, f"{tiempo:.4f}s", ha='center', va='bottom', fontsize=9)
+    plt.title(f"{titulo} vs Cantidad de registros", fontsize=14)
+    plt.xlabel("Cantidad de registros")
+    plt.ylabel("Tiempo (segundos)")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(nombre_archivo)
+    plt.show()
 
 def main():
-    file = AVLTree("test.bin")
+    cantidades = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    with open("sales_dataset.csv", newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)
+        rows = list(reader)
+
+    avl = AVLTree("avl.dat")
+    tiempos_insert, tiempos_busqueda, tiempos_rango, tiempos_delete = medir_tiempos_por_cantidad(avl, rows, cantidades)
+
+    graficar_lineal(cantidades, tiempos_insert, "Tiempo de Inserción", "grafico_insercion.png")
+    graficar_lineal(cantidades, tiempos_busqueda, "Tiempo de Búsqueda", "grafico_busqueda.png")
+    graficar_lineal(cantidades, tiempos_rango, "Tiempo de Búsqueda por Rango", "grafico_rango.png")
+    graficar_lineal(cantidades, tiempos_delete, "Tiempo de Eliminación", "grafico_eliminacion.png")
+
+
+'''def main():
+    avl = AVLTree("avl.dat")
+
+    with open("sales_dataset.csv", newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)
+        for row in reader:
+            id = int(row[0])
+            nombre = row[1]
+            cantidad = int(row[2])
+            precio = float(row[3])
+            fecha = row[4]
+            avl.insert(Record(id, nombre, cantidad, precio, fecha))
+
+    #avl.display_pretty()
 
     # r1 = Record(4, "melanie", 30, 10.4, "2004-10-12")
     # r2 = Record(5, "melanie", 30, 10.4, "2004-10-12")
@@ -354,24 +489,33 @@ def main():
 
     # print()
 
-    # print(file.find(2))
+    print(avl.find(2))
+
+    records = avl.search_rango(5, 15)
+    for record in records:
+        print(record)
+
 
     # print()
     # file.display_pretty()
 
     # print()
 
-    # file.remove(2)
-    # file.remove(4)
-    # file.remove(5)
+    avl.remove(2)
+    avl.remove(4)
+    avl.remove(5)
+
+    print(avl.find(2))
+    print(avl.find(4))
+    print(avl.find(5))
+
+    avl.display_pretty()
 
     # file.display_pretty()
 
     # print()
 
-    file.load("sales_dataset.csv")
+    #print(avl.get_preorder())
 
-    print(file.get_preorder())
-
-
+'''
 main()
