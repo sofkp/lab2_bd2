@@ -110,7 +110,6 @@ class BST_File:
                     to_write = struct.pack(FORMAT, -1, nombre, cantidad, precio, fecha, izq, der)
                     f.write(to_write)
                     return
-            print(f"Registro con ID {key} no encontrado.")
 
     def search_rango(self, minimo, maximo):
         resultados = []
