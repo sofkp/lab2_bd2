@@ -107,7 +107,6 @@ class BST_File:
                     to_write = struct.pack(FORMAT, -1, nombre, cantidad, precio, fecha, izq, der)
                     f.write(to_write)
                     return
-            print(f" registro con ID {key} no encontrado.")
 
     def search_rango(self, minimo, maximo):
         resultados = []
@@ -151,7 +150,6 @@ def main():
             precio = float(row[3])
             fecha = row[4]
             bst.insert(Venta(id, nombre, cantidad, precio, fecha))
-            print(f"Insertado ID {id}")
 
     a = bst.search(3)
     if a:
