@@ -26,26 +26,20 @@ class Record:
 
     def to_binary(self):
         format_str = 'i30sif10si??'
-        packed = struct.pack(format_str, 
-                            self.id,
-                            self.name.encode().ljust(30, b'\x00'),
-                            self.cant, 
-                            self.price,
-                            self.date.encode().ljust(10, b'\x00'),
-                            self.next, 
-                            self.deleted,
-                            self.aux)
-        return packed
+        return struct.pack(format_str,
+                           self.id,
+                           self.name.encode().ljust(30, b'\x00'),
+                           self.cant,
+                           self.price,
+                           self.date.encode().ljust(10, b'\x00'),
+                           self.next,
+                           self.deleted,
+                           self.aux)
 
     @staticmethod
     def from_binary(data):
-        #try:
         id, name, cant, price, date, next, deleted, aux = struct.unpack('i30sif10si??', data)
         return Record(id, name.decode().strip(), cant, price, date.decode().strip(), deleted, next, aux)
-        # except struct.error as e:
-        #     print(f"Error al desempaquetar: {e}")
-        #     print(f"Datos recibidos: {data}, longitud: {len(data)}")
-        #     return None
 
 class Sequential:
     def __init__(self, filename):
@@ -55,10 +49,14 @@ class Sequential:
 
         if not os.path.exists(self.filename):
             with open(self.filename, 'wb') as f:
-                f.write(struct.pack("i?", -1, False)) 
+                f.write(struct.pack("i?", -1, False))
 
         self.RECORD_SIZE = struct.calcsize('i30sif10si??')
         print(f"Tamaño de registro calculado: {self.RECORD_SIZE} bytes")
+
+    def write_start(self, start_pos, aux):
+        with open(self.filename, 'r+b') as f:
+            f.write(struct.pack("i?", start_pos, aux))
 
     def get_start(self):
         with open(self.filename, 'rb') as f:
@@ -66,16 +64,6 @@ class Sequential:
             if len(data) < 5:
                 return -1, False
             return struct.unpack("i?", data)
-
-    def write_start(self, start_pos, aux):
-        with open(self.filename, 'r+b') as f:
-            f.write(struct.pack("i?", start_pos, aux))
-        def get_start(self):
-            with open(self.filename, 'rb') as f:
-                data = f.read(5)
-                if len(data) < 5:
-                    return -1, False
-                return struct.unpack("i?", data)
 
     def get_record_at(self, aux, pos):
         filename = self.aux_filename if aux else self.filename
@@ -135,7 +123,9 @@ class Sequential:
         print(f"Encabezado (start position): {start_pos}{'a' if start_aux else 'd'}")
 
         with open(self.filename, "rb") as f:
-            f.seek(5)
+            header = struct.unpack("i", f.read(4))[0]
+            print(f"Encabezado (start position): {header}d" if header != -1 else "Encabezado (start position): -1")
+            
             pos = 0
             while True:
                 data = f.read(self.RECORD_SIZE)
@@ -143,9 +133,10 @@ class Sequential:
                     break
                 record = Record.from_binary(data)
                 if record:
-                    next_ptr = f"{record.next}{'a' if record.aux else 'd'}" if record.next != -1 else "-1"
-                    deleted_flag = "[DELETED] " if record.deleted else ""
-                    print(f"Pos {pos}d: {deleted_flag}{record.id} | {record.name} | {record.cant} | {record.price} | {record.date} | next: {next_ptr}")
+                    next_str = "-1"
+                    if record.next != -1:
+                        next_str = f"{record.next}{'a' if record.aux else 'd'}"
+                    print(f"Pos {pos}: {record} | → {next_str}")
                 pos += 1
 
         print("\nContenido del archivo auxiliar:")
@@ -158,20 +149,22 @@ class Sequential:
                         break
                     record = Record.from_binary(data)
                     if record:
-                        next_ptr = f"{record.next}{'a' if record.aux else 'd'}" if record.next != -1 else "-1"
-                        deleted_flag = "[DELETED] " if record.deleted else ""
-                        print(f"Pos {pos}a: {deleted_flag}{record.id} | {record.name} | {record.cant} | {record.price} | {record.date} | next: {next_ptr}")
+                        next_str = "-1"
+                        if record.next != -1:
+                            next_str = f"{record.next}{'a' if record.aux else 'd'}"
+                        print(f"Pos {pos}: {record} | → {next_str}")
                     pos += 1
         except FileNotFoundError:
             print("No existe archivo auxiliar")
+
 
     def insert(self, record):
         with open(self.filename, "rb") as f:
             f.seek(0, 2)
             file_size = f.tell()
 
-        if file_size <= self.HEADER_SIZE: 
-            self.write_start(0, False) 
+        if file_size <= self.HEADER_SIZE:
+            self.write_start(0, False)
             self.write_record_at(record, 0, False)
             return
 
@@ -235,10 +228,10 @@ class Sequential:
     def search(self, key):
         pos = self.binary_search(key)
         if pos == -1:
-            pos = self.get_start()
+            pos, aux = self.get_start()
             if pos == -1:
                 return None
-            record = self.get_record_at(pos[1], pos[0])
+            record = self.get_record_at(aux, pos)
         else:
             record = self.get_record_at(False, pos)
 
@@ -247,32 +240,44 @@ class Sequential:
                 return record
             if record.next == -1:
                 break
+            print(f"aux: {record.aux} and next: {record.next}")
             record = self.get_record_at(record.aux, record.next)
 
         return None
 
     def search_range(self, mini, maxi):
         results = []
+        with open(self.filename, "rb") as f:
+            f.seek(5)
+            while True:
+                data = f.read(self.RECORD_SIZE)
+                if not data or len(data) < self.RECORD_SIZE:
+                    break
+                record = Record.from_binary(data)
+                if not record or record.deleted:
+                    continue
+                if mini <= record.id <= maxi:
+                    results.append(record)
 
-        left_pos = self.binary_search(mini)
-        left = self.get_record_at(False, left_pos)
-
-        while left.is_smaller(maxi):
-            if left.id >= mini:
-                results.append(left)
-            left = self.get_record_at(left.aux, left.next)
+                next_ptr = record.next
+                while next_ptr != -1:
+                    aux_record = self.get_record_at(True, next_ptr)
+                    if aux_record and not aux_record.deleted and mini <= aux_record.id <= maxi:
+                        results.append(aux_record)
+                    if aux_record is None:
+                        break
+                    next_ptr = aux_record.next
 
         return results
 
     def delete(self, key):
-        start_pos, start_aux = self.get_start()
+        start_pos, aux = self.get_start()
         if start_pos == -1:
             return False
 
         prev_pos = -1
         prev_aux = False
-        current_pos = start_pos
-        current_aux = start_aux
+        pos = start_pos
 
         while current_pos != -1:
             record = self.get_record_at(current_aux, current_pos)
@@ -287,10 +292,10 @@ class Sequential:
                     self.write_start(record.next, record.aux)
                 else:
                     prev_record = self.get_record_at(prev_aux, prev_pos)
-                    if prev_record:
-                        prev_record.next = record.next
-                        prev_record.aux = record.aux
-                        self.write_record_at(prev_record, prev_pos, prev_aux)
+                    prev_record.next = record.next
+                    self.write_record_at(prev_record, prev_pos, prev_aux)
+                else:
+                    self.write_start(record.next, record.aux)
                 return True
 
             prev_pos = current_pos
@@ -299,7 +304,6 @@ class Sequential:
             current_aux = record.aux
 
         return False
-
 
 def main():
     for fname in ["test.bin", "aux.bin"]:
@@ -333,9 +337,7 @@ def main():
     print(file.search(2))
 
     print("\nsearch rango:")
-    res = file.search_range(5,10)
-    for rec in res:
-        print(rec)
+    file.search_range(5, 10)
 
     print("\neliminar:")
     print(file.delete(8))
