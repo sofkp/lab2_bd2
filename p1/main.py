@@ -4,6 +4,7 @@ import pandas as pd
 import csv
 import time
 import matplotlib.pyplot as plt
+import math
 
 class Record:
     def __init__(self, id=-1, name="", cant=-1, price=-1, date="", deleted=False, next=-1, aux=False):
@@ -164,32 +165,65 @@ class Sequential:
             print("No existe archivo auxiliar")
 
     def insert(self, record):
+        # Check if main file is empty (only has header)
         with open(self.filename, "rb") as f:
             f.seek(0, 2)
             file_size = f.tell()
 
-        if file_size <= self.HEADER_SIZE:
-            self.write_start(0, False) 
+        if file_size <= self.HEADER_SIZE:  # Only has header
+            self.write_start(0, False)  # First record at position 0 in main file
             self.write_record_at(record, 0, False)
             return
 
+        # Find insertion position using binary search
         pos = self.binary_search(record.key())
         start_pos, start_aux = self.get_start()
 
+        # Case 1: Insert at beginning (new smallest key)
         if pos == -1:
-            first_record = self.get_record_at(start_aux, start_pos)
-            if first_record:
+            prev = self.get_record_at(start_aux, start_pos)
+            if prev.next == -1:
                 new_pos = self.write_record_end(True, record)
                 record.next = start_pos
                 record.aux = start_aux
+                # Update the record in AUX file with proper links
                 self.write_record_at(record, new_pos, True)
+                # Update header to point to new record in AUX file
                 self.write_start(new_pos, True)
+            else:
+                temp = self.get_record_at(prev.aux, prev.next)
+                prev_pos, prev_aux = start_pos, start_aux
+
+                first = True
+                if start_aux != False:
+                    while temp.next != -1 or temp.is_smaller(record.id):
+                        prev_pos, prev_aux = prev.next, prev.aux
+                        first = False
+                        prev = self.get_record_at(prev.aux, prev.next)
+                        temp = self.get_record_at(temp.aux, temp.next)
+
+                if first:
+                    new_pos = self.write_record_end(True, record)
+                    record.next = start_pos
+                    record.aux = start_aux
+                    # Update the record in AUX file with proper links
+                    self.write_record_at(record, new_pos, True)
+                    # Update header to point to new record in AUX file
+                    self.write_start(new_pos, True)
+                else:
+                    record.next, record.aux = prev.next, prev.aux
+                    new_pos = self.write_record_end(True, record)
+                    prev.next, prev.aux = new_pos, True
+
+                self.write_record_at(prev, prev_pos, prev_aux)
             return
 
+        # Get the record at found position
         current = self.get_record_at(False, pos)
         if current is None:
             return
 
+        # Case 2: Insert at end of list
         if current.next == -1:
             if record.key() > current.key():
                 new_pos = self.write_record_end(False, record)
@@ -198,8 +232,10 @@ class Sequential:
                 self.write_record_at(current, pos, False)
             return
 
+        # Case 3: Insert in middle of list
         next_record = self.get_record_at(current.aux, current.next)
         if next_record and record.key() > current.key() and record.key() < next_record.key():
+            # Insert between current and next (in AUX file)
             record.next = current.next
             record.aux = current.aux
             new_pos = self.write_record_end(True, record)
@@ -207,6 +243,7 @@ class Sequential:
             current.aux = True
             self.write_record_at(current, pos, False)
         else:
+            # Need to find correct position in chain
             prev_record = current
             prev_pos = pos
             prev_aux = False
@@ -223,12 +260,65 @@ class Sequential:
                 next_pos = next_record.next
                 next_aux = next_record.aux
 
+            # Insert between prev_record and next_record (in AUX file)
             record.next = prev_record.next
             record.aux = prev_record.aux
             new_pos = self.write_record_end(True, record)
             prev_record.next = new_pos
             prev_record.aux = True
             self.write_record_at(prev_record, prev_pos, prev_aux)
+
+        n = self.get_end(False)
+        if new_pos > math.log(n):
+            self.rebuild()
+
+    def get_end(self, aux):
+        if aux:
+            with open(self.aux_filename, "ab+") as f:
+                f.seek(0, 2)  # Move the pointer to the end of the file
+                end = (f.tell()-self.HEADER_SIZE) // self.RECORD_SIZE  # Calculate the number of records in the file
+            return end
+        else:
+            with open(self.filename, "ab+") as f:
+                f.seek(0, 2)  # Move the pointer to the end of the file
+                end = (f.tell()-self.HEADER_SIZE) // self.RECORD_SIZE  # Calculate the number of records in the file
+            return end
+            
+    def rebuild(self):
+        print("\nIniciando proceso de reconstrucción...")
+
+        ordered_records = []
+        pos, aux = self.get_start()
+
+        while pos != -1:
+            record = self.get_record_at(aux, pos)
+            if record is None:
+                break
+            if not record.deleted:
+                ordered_records.append(record)
+            pos = record.next
+            aux = record.aux
+
+        temp_main = "temp_main.bin"
+        temp_aux = "temp_aux.bin"
+
+        # Write records to new main file
+        with open(temp_main, 'wb') as f_main:
+            # Write header (will be updated later)
+            f_main.write(struct.pack("i?", 0, False))
+
+            # Write records sequentially
+            for i, record in enumerate(ordered_records):
+                record.next = i+1
+                if record.next == len(ordered_records):
+                    record.next = -1
+                record.aux = False
+                f_main.write(record.to_binary())
+
+        # Clear auxiliary file
+        open(temp_aux, 'wb').close()
+        os.replace(temp_main, self.filename)
+        os.replace(temp_aux, self.aux_filename)
 
     def search(self, key):
         pos = self.binary_search(key)
@@ -297,7 +387,7 @@ class Sequential:
             current_aux = record.aux
 
         return False
-'''
+
 def medir_tiempos_por_cantidad(se, rows, cantidades):
     tiempos_insert = []
     tiempos_busqueda = []
@@ -324,18 +414,18 @@ def medir_tiempos_por_cantidad(se, rows, cantidades):
 
         t1 = time.time()
         for i in range(1, n + 1, max(1, n // 10)):
-            se.find(i)
+            se.search(i)
         t2 = time.time()
         tiempos_busqueda.append(t2 - t1)
 
         t1 = time.time()
-        se.search_rango(1, n)
+        se.search_range(1, n)
         t2 = time.time()
         tiempos_rango.append(t2 - t1)
 
         t1 = time.time()
         for i in range(1, n + 1, max(1, n // 10)):
-            se.remove(i)
+            se.delete(i)
         t2 = time.time()
         tiempos_delete.append(t2 - t1)
 
@@ -357,7 +447,7 @@ def graficar_lineal(cantidades, tiempos, titulo, nombre_archivo):
 
 def main():
     cantidades = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
-    with open("sales_dataset.csv", newline='', encoding='utf-8') as csvfile:
+    with open("sales_dataset_random.csv", newline='', encoding='utf-8') as csvfile:
         reader = csv.reader(csvfile)
         next(reader)
         rows = list(reader)
@@ -393,7 +483,7 @@ def main():
     print("\nResultado final:")
     file.print_all()
 
-    '''print("\nSEARCH:")
+    print("\nSEARCH:")
     print(file.search(8))
     print(file.search(2))
 
